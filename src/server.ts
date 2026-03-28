@@ -35,7 +35,15 @@ export async function buildServer(): Promise<FastifyInstance> {
     // Register ajv-formats so `format: 'email'` is enforced on body schemas
     // (ADR-005 § Format Validation). Without this, ajv silently ignores the
     // `format` keyword and invalid email strings would pass validation.
-    ajv: { plugins: [addFormats] },
+    // Set removeAdditional: false so `additionalProperties: false` causes a 400
+    // response instead of silently stripping extra fields (ADR-005 § Consequences).
+    ajv: {
+      // ajv-formats' FormatsPlugin return type (Ajv) is narrower than Fastify's
+      // expected Plugin<unknown> (void); cast is safe — the plugin mutates the
+      // Ajv instance in place and Fastify does not use the return value.
+      plugins: [addFormats as unknown as (ajv: unknown) => void],
+      customOptions: { removeAdditional: false },
+    },
   });
 
   // Register the cookie plugin before routes so setCookie is available

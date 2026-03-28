@@ -153,15 +153,17 @@ export const authRoutes: FastifyPluginCallback = (
         return reply.code(isDuplicate ? 409 : 400).send({ error: message });
       }
 
-      const payload: JWTPayload = {
+      // NOTE: iat and exp are intentionally omitted here; signAccessToken sets
+      // expiresIn which causes jsonwebtoken to populate both fields automatically.
+      // Providing exp in the payload alongside expiresIn causes jsonwebtoken to
+      // throw "Bad options.expiresIn option — payload already has exp property".
+      const payload = {
         sub: user.id,
         email: user.email,
-        roles: [],
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
+        roles: [] as string[],
       };
 
-      const accessToken = signAccessToken(payload);
+      const accessToken = signAccessToken(payload as unknown as JWTPayload);
       const refreshToken = generateRefreshToken();
 
       storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
@@ -195,15 +197,15 @@ export const authRoutes: FastifyPluginCallback = (
         return reply.code(401).send({ error: 'Invalid credentials' });
       }
 
-      const payload: JWTPayload = {
+      // NOTE: iat and exp are intentionally omitted — signAccessToken sets
+      // expiresIn which causes jsonwebtoken to populate both automatically.
+      const payload = {
         sub: user.id,
         email: user.email,
-        roles: [],
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
+        roles: [] as string[],
       };
 
-      const accessToken = signAccessToken(payload);
+      const accessToken = signAccessToken(payload as unknown as JWTPayload);
       const refreshToken = generateRefreshToken();
 
       storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
