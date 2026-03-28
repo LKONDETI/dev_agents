@@ -5,9 +5,11 @@
  *    authenticated Fastify request after middleware verification.
  * 3. Define token-related shapes (TokenPair, JWTPayload, SessionRecord)
  *    as specified by ADR-001 (hybrid JWT + httpOnly refresh token pattern).
- * 4. Augment FastifyRequest so `request.user` is typed project-wide
+ * 4. Define ISessionStore interface per ADR-002 so implementations can be
+ *    swapped (e.g. Redis) without modifying rotation logic.
+ * 5. Augment FastifyRequest so `request.user` is typed project-wide
  *    without casting.
- * 5. Keep this file pure types/interfaces — zero runtime code.
+ * 6. Keep this file pure types/interfaces — zero runtime code.
  */
 
 // ---------------------------------------------------------------------------
@@ -64,16 +66,35 @@ export interface JWTPayload {
 }
 
 /**
- * A persisted refresh-token record in the revocation store.
+ * A persisted refresh-token record in the session store.
  * Rotated on every use; `revoked` is set to true on logout or rotation.
- * TODO: replace in-memory Map with a Redis adapter before horizontal scaling
- * (see ADR-001 § Out of Scope).
+ * `email` and `roles` are stored so the /refresh endpoint can build a new
+ * access-token payload without decoding the (possibly expired) old access
+ * token (ADR-002 § SessionRecord Enrichment).
  */
 export interface SessionRecord {
   userId: string;
+  email: string;
+  roles: string[];
   token: string;
   expiresAt: Date;
   revoked: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Session store abstraction (ADR-002)
+// ---------------------------------------------------------------------------
+
+/**
+ * Abstraction over the refresh-token session store.
+ * The default implementation is in-memory (`InMemorySessionStore` in tokens.ts);
+ * swap for a Redis adapter by replacing `defaultSessionStore` in tokens.ts
+ * (see ADR-002).
+ */
+export interface ISessionStore {
+  get(token: string): SessionRecord | undefined;
+  set(token: string, record: SessionRecord): void;
+  delete(token: string): void;
 }
 
 // ---------------------------------------------------------------------------

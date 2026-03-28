@@ -19,6 +19,10 @@ import { generateRefreshToken, rotateRefreshToken, storeRefreshToken } from './t
 import type { JWTPayload } from './types';
 import { createUser, findUserByEmail } from './userStore';
 
+// Note: jsonwebtoken is no longer imported here. The jwt.decode workaround in
+// /refresh has been eliminated by enriching SessionRecord with email and roles
+// (ADR-002 § SessionRecord Enrichment).
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -138,7 +142,7 @@ export const authRoutes: FastifyPluginCallback = (
     const accessToken = signAccessToken(payload);
     const refreshToken = generateRefreshToken();
 
-    storeRefreshToken(user.id, refreshToken, REFRESH_TTL_DAYS);
+    storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
     setRefreshCookie(reply, refreshToken);
 
     return reply.code(201).send({ accessToken });
@@ -180,7 +184,7 @@ export const authRoutes: FastifyPluginCallback = (
     const accessToken = signAccessToken(payload);
     const refreshToken = generateRefreshToken();
 
-    storeRefreshToken(user.id, refreshToken, REFRESH_TTL_DAYS);
+    storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
     setRefreshCookie(reply, refreshToken);
 
     return reply.code(200).send({ accessToken });
@@ -199,61 +203,27 @@ export const authRoutes: FastifyPluginCallback = (
       return reply.code(401).send({ error: 'Refresh token missing' });
     }
 
-    const newRefreshToken = await rotateRefreshToken(oldToken);
+    // rotateRefreshToken now returns the new SessionRecord (which contains
+    // userId, email, and roles) so we no longer need to decode the old access
+    // token to reconstruct the payload (ADR-002 § SessionRecord Enrichment).
+    const newSession = await rotateRefreshToken(oldToken);
 
-    if (!newRefreshToken) {
+    if (!newSession) {
       clearRefreshCookie(reply);
       return reply.code(401).send({ error: 'Refresh token invalid or expired' });
     }
 
-    // We need the userId to build a new access token; re-derive it from the
-    // old token's revocation store absence — the new session record holds it,
-    // but we have no direct accessor here. Instead, verify the old token
-    // gracefully from the session rotation result.
-    // TODO: expose getUserIdForToken from tokens.ts to avoid re-parsing the
-    //       old refresh token when a userId is needed post-rotation.
-
-    // Temporarily derive userId by checking the raw old token is now revoked
-    // and trusting the rotation stored a new record. We need to obtain userId
-    // from somewhere — parse from the access token in the Authorization header
-    // if present, or we return a minimal payload until the TODO above is done.
-    //
-    // For now: require the client to send the current (possibly expired) access
-    // token so we can extract sub/email/roles for the new access token payload.
-    const authHeader = request.headers['authorization'];
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      // Cannot build a new access token without the old payload.
-      // Clear the rotated refresh token and return 401.
-      // TODO: store userId in the session record accessor (see above).
-      clearRefreshCookie(reply);
-      return reply.code(401).send({ error: 'Access token required for refresh' });
-    }
-
-    const rawAccessToken = authHeader.slice('Bearer '.length);
-
-    // verifyAccessToken returns null for expired tokens; use jwt.decode for
-    // expired-but-structurally-valid tokens so we can reclaim sub/email/roles.
-    // We import jwt directly here only for the decode-without-verify path.
-    const { default: jwt } = await import('jsonwebtoken');
-    const oldPayload = jwt.decode(rawAccessToken) as import('./types').JWTPayload | null;
-
-    if (!oldPayload || !oldPayload.sub) {
-      clearRefreshCookie(reply);
-      return reply.code(401).send({ error: 'Unable to decode access token payload' });
-    }
-
     const newPayload: JWTPayload = {
-      sub: oldPayload.sub,
-      email: oldPayload.email,
-      roles: oldPayload.roles ?? [],
+      sub: newSession.userId,
+      email: newSession.email,
+      roles: newSession.roles,
       iat: Math.floor(Date.now() / 1000),
       exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
     };
 
     const newAccessToken = signAccessToken(newPayload);
 
-    setRefreshCookie(reply, newRefreshToken);
+    setRefreshCookie(reply, newSession.token);
 
     return reply.code(200).send({ accessToken: newAccessToken });
   });
