@@ -78,13 +78,36 @@ function clearRefreshCookie(reply: FastifyReply): void {
 }
 
 // ---------------------------------------------------------------------------
-// Body type guards (minimal; full JSON-schema validation is a TODO)
+// JSON Schema validation (ADR-005)
 // ---------------------------------------------------------------------------
 
-/** Shape expected by /register and /login. */
+/**
+ * Shared body schema for /register and /login.
+ * Fastify (ajv) validates this before any handler code runs, so the handler
+ * can safely destructure `email` and `password` without runtime guards.
+ * `additionalProperties: false` rejects any extra fields in the request body.
+ * `format: 'email'` requires ajv-formats to be registered on the server
+ * instance (see server.ts — ADR-005 § Format Validation).
+ */
+const authBodySchema = {
+  type: 'object',
+  required: ['email', 'password'],
+  properties: {
+    email: { type: 'string', format: 'email' },
+    password: { type: 'string', minLength: 8 },
+  },
+  additionalProperties: false,
+} as const;
+
+/**
+ * TypeScript mirror of authBodySchema.
+ * After schema validation passes, the handler is guaranteed:
+ *   - email: a non-empty string that matches the email format
+ *   - password: a string of at least 8 characters
+ */
 interface AuthBody {
-  email: string;
-  password: string;
+  email: string;    // guaranteed: string, valid email format
+  password: string; // guaranteed: string, minLength 8
 }
 
 // ---------------------------------------------------------------------------
@@ -111,84 +134,84 @@ export const authRoutes: FastifyPluginCallback = (
   // POST /register
   // -------------------------------------------------------------------------
 
-  fastify.post('/register', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { email, password } = request.body as AuthBody;
+  fastify.post(
+    '/register',
+    { schema: { body: authBodySchema } },
+    async (request: FastifyRequest<{ Body: AuthBody }>, reply: FastifyReply) => {
+      const { email, password } = request.body;
 
-    if (!email || !password) {
-      return reply.code(400).send({ error: 'email and password are required' });
-    }
+      let user;
 
-    let user;
+      try {
+        user = await createUser(email, password);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : 'Registration failed';
 
-    try {
-      user = await createUser(email, password);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Registration failed';
+        // Surface a 409 for duplicate emails; 400 for everything else
+        const isDuplicate =
+          err instanceof Error && err.message.includes('already registered');
+        return reply.code(isDuplicate ? 409 : 400).send({ error: message });
+      }
 
-      // Surface a 409 for duplicate emails; 400 for everything else
-      const isDuplicate =
-        err instanceof Error && err.message.includes('already registered');
-      return reply.code(isDuplicate ? 409 : 400).send({ error: message });
-    }
+      const payload: JWTPayload = {
+        sub: user.id,
+        email: user.email,
+        roles: [],
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
+      };
 
-    const payload: JWTPayload = {
-      sub: user.id,
-      email: user.email,
-      roles: [],
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
-    };
+      const accessToken = signAccessToken(payload);
+      const refreshToken = generateRefreshToken();
 
-    const accessToken = signAccessToken(payload);
-    const refreshToken = generateRefreshToken();
+      storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
+      setRefreshCookie(reply, refreshToken);
 
-    storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
-    setRefreshCookie(reply, refreshToken);
-
-    return reply.code(201).send({ accessToken });
-  });
+      return reply.code(201).send({ accessToken });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /login
   // -------------------------------------------------------------------------
 
-  fastify.post('/login', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { email, password } = request.body as AuthBody;
+  fastify.post(
+    '/login',
+    { schema: { body: authBodySchema } },
+    async (request: FastifyRequest<{ Body: AuthBody }>, reply: FastifyReply) => {
+      const { email, password } = request.body;
 
-    if (!email || !password) {
-      return reply.code(400).send({ error: 'email and password are required' });
-    }
+      const user = findUserByEmail(email);
 
-    const user = findUserByEmail(email);
+      // Use a constant-time-equivalent response to avoid leaking whether the
+      // email exists (generic 401 for both bad email and bad password).
+      if (!user) {
+        return reply.code(401).send({ error: 'Invalid credentials' });
+      }
 
-    // Use a constant-time-equivalent response to avoid leaking whether the
-    // email exists (generic 401 for both bad email and bad password).
-    if (!user) {
-      return reply.code(401).send({ error: 'Invalid credentials' });
-    }
+      const valid = await verifyPassword(password, user.passwordHash);
 
-    const valid = await verifyPassword(password, user.passwordHash);
+      if (!valid) {
+        return reply.code(401).send({ error: 'Invalid credentials' });
+      }
 
-    if (!valid) {
-      return reply.code(401).send({ error: 'Invalid credentials' });
-    }
+      const payload: JWTPayload = {
+        sub: user.id,
+        email: user.email,
+        roles: [],
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
+      };
 
-    const payload: JWTPayload = {
-      sub: user.id,
-      email: user.email,
-      roles: [],
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
-    };
+      const accessToken = signAccessToken(payload);
+      const refreshToken = generateRefreshToken();
 
-    const accessToken = signAccessToken(payload);
-    const refreshToken = generateRefreshToken();
+      storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
+      setRefreshCookie(reply, refreshToken);
 
-    storeRefreshToken(user.id, user.email, payload.roles, refreshToken, REFRESH_TTL_DAYS);
-    setRefreshCookie(reply, refreshToken);
-
-    return reply.code(200).send({ accessToken });
-  });
+      return reply.code(200).send({ accessToken });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /refresh

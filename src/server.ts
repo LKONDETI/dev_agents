@@ -11,6 +11,7 @@
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import addFormats from 'ajv-formats';
 
 import { authRoutes } from './auth/routes';
 
@@ -31,6 +32,10 @@ export async function buildServer(): Promise<FastifyInstance> {
     logger: {
       level: process.env['LOG_LEVEL'] ?? 'info',
     },
+    // Register ajv-formats so `format: 'email'` is enforced on body schemas
+    // (ADR-005 § Format Validation). Without this, ajv silently ignores the
+    // `format` keyword and invalid email strings would pass validation.
+    ajv: { plugins: [addFormats] },
   });
 
   // Register the cookie plugin before routes so setCookie is available
