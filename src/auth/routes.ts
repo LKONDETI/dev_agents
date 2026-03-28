@@ -250,12 +250,15 @@ export const authRoutes: FastifyPluginCallback = (
         return reply.code(401).send({ error: 'Refresh token invalid or expired' });
       }
 
-      const newPayload: JWTPayload = {
+      // NOTE: iat and exp are intentionally omitted here; signAccessToken sets
+      // expiresIn which causes jsonwebtoken to populate both fields automatically.
+      // Providing exp in the payload alongside expiresIn causes jsonwebtoken to
+      // throw "Bad options.expiresIn option — payload already has exp property"
+      // (same pattern as /register and /login above).
+      const newPayload = {
         sub: newSession.userId,
         email: newSession.email,
         roles: newSession.roles,
-        iat: Math.floor(Date.now() / 1000),
-        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
       };
 
       const newAccessToken = signAccessToken(newPayload);
