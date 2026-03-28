@@ -77,6 +77,25 @@ export interface SessionRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Revocation store abstraction (ADR-004)
+// ---------------------------------------------------------------------------
+
+/**
+ * Abstraction over the token revocation store.
+ * The default implementation is in-memory; swap for a Redis adapter by
+ * replacing `defaultRevocationStore` in revocation.ts (see ADR-004).
+ */
+export interface IRevocationStore {
+  /** Marks a token as revoked for the given TTL (seconds). */
+  revoke(token: string, ttl: number): void;
+  /**
+   * Returns `true` if the token is currently revoked and its revocation entry
+   * has not yet expired.
+   */
+  isRevoked(token: string): Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
 // Fastify module augmentation
 // ---------------------------------------------------------------------------
 
