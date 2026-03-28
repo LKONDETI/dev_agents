@@ -23,11 +23,11 @@ Never skip task-planner for non-trivial work.
 Never commit without running code-reviewer first.
 
 ## Code conventions
-- Language: [fill in — e.g. TypeScript, Python]
-- Framework: [fill in — e.g. Next.js, FastAPI]
-- Test framework: [fill in — e.g. Jest, Pytest, Vitest]
-- Package manager: [fill in — e.g. npm, pnpm, uv]
-- Style: [fill in — e.g. ESLint + Prettier, Ruff]
+- Language: TypeScript
+- Framework: Fastify
+- Test framework: Jest
+- Package manager: pnpm
+- Style: ESLint + Prettier
 
 ## ADR location
 All architecture decisions are stored in /docs/adr/
