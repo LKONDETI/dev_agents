@@ -3,14 +3,17 @@
  * 1. Create a buildServer factory that registers plugins and routes; exporting
  *    it separately from the listen call makes the server testable without I/O.
  * 2. Register @fastify/cookie so setCookie works in auth routes.
- * 3. Register authRoutes under the /auth prefix.
- * 4. Export buildServer for tests; export start for the process entry point.
- * 5. Guard the process startup behind a `require.main` check so tests can
+ * 3. Register @fastify/rate-limit globally (ADR-006); per-route overrides live
+ *    in routes.ts.
+ * 4. Register authRoutes under the /auth prefix.
+ * 5. Export buildServer for tests; export start for the process entry point.
+ * 6. Guard the process startup behind a `require.main` check so tests can
  *    import buildServer without side effects.
  */
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
+import rateLimit from '@fastify/rate-limit';
 import addFormats from 'ajv-formats';
 
 import { authRoutes } from './auth/routes';
@@ -48,6 +51,15 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   // Register the cookie plugin before routes so setCookie is available
   await fastify.register(cookie);
+
+  // Register rate-limiting globally with a permissive default; auth routes
+  // override per-route limits via `config.rateLimit` (ADR-006).
+  await fastify.register(rateLimit, {
+    global: true,
+    max: 100,
+    timeWindow: '1 minute',
+    keyGenerator: (request) => request.ip,
+  });
 
   // Auth routes under /auth (ADR-001 § API Endpoints)
   await fastify.register(authRoutes, { prefix: '/auth' });

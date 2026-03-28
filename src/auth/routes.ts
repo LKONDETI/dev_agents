@@ -136,7 +136,10 @@ export const authRoutes: FastifyPluginCallback = (
 
   fastify.post(
     '/register',
-    { schema: { body: authBodySchema } },
+    // Rate limit: 5 requests per IP per hour (ADR-006 § Per-Route Limits).
+    // Tight limit blocks email-enumeration abuse with minimal friction for
+    // legitimate users (account creation should be rare per IP).
+    { config: { rateLimit: { max: 5, timeWindow: '1 hour' } }, schema: { body: authBodySchema } },
     async (request: FastifyRequest<{ Body: AuthBody }>, reply: FastifyReply) => {
       const { email, password } = request.body;
 
@@ -179,7 +182,10 @@ export const authRoutes: FastifyPluginCallback = (
 
   fastify.post(
     '/login',
-    { schema: { body: authBodySchema } },
+    // Rate limit: 10 requests per IP per 15 minutes (ADR-006 § Per-Route Limits).
+    // Allows ~40 attempts per hour before lockout — sufficient for a user who
+    // misremembers their password while making brute force impractical.
+    { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } }, schema: { body: authBodySchema } },
     async (request: FastifyRequest<{ Body: AuthBody }>, reply: FastifyReply) => {
       const { email, password } = request.body;
 
@@ -219,39 +225,46 @@ export const authRoutes: FastifyPluginCallback = (
   // POST /refresh
   // -------------------------------------------------------------------------
 
-  fastify.post('/refresh', async (request: FastifyRequest, reply: FastifyReply) => {
-    const oldToken: string | undefined = (request.cookies as Record<string, string | undefined>)[
-      REFRESH_COOKIE
-    ];
+  fastify.post(
+    '/refresh',
+    // Rate limit: 20 requests per IP per minute (ADR-006 § Per-Route Limits).
+    // Generous enough for SPAs that refresh on every tab focus while blocking
+    // automated refresh-token exhaustion attacks.
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const oldToken: string | undefined = (request.cookies as Record<string, string | undefined>)[
+        REFRESH_COOKIE
+      ];
 
-    if (!oldToken) {
-      return reply.code(401).send({ error: 'Refresh token missing' });
-    }
+      if (!oldToken) {
+        return reply.code(401).send({ error: 'Refresh token missing' });
+      }
 
-    // rotateRefreshToken now returns the new SessionRecord (which contains
-    // userId, email, and roles) so we no longer need to decode the old access
-    // token to reconstruct the payload (ADR-002 § SessionRecord Enrichment).
-    const newSession = await rotateRefreshToken(oldToken);
+      // rotateRefreshToken now returns the new SessionRecord (which contains
+      // userId, email, and roles) so we no longer need to decode the old access
+      // token to reconstruct the payload (ADR-002 § SessionRecord Enrichment).
+      const newSession = await rotateRefreshToken(oldToken);
 
-    if (!newSession) {
-      clearRefreshCookie(reply);
-      return reply.code(401).send({ error: 'Refresh token invalid or expired' });
-    }
+      if (!newSession) {
+        clearRefreshCookie(reply);
+        return reply.code(401).send({ error: 'Refresh token invalid or expired' });
+      }
 
-    const newPayload: JWTPayload = {
-      sub: newSession.userId,
-      email: newSession.email,
-      roles: newSession.roles,
-      iat: Math.floor(Date.now() / 1000),
-      exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
-    };
+      const newPayload: JWTPayload = {
+        sub: newSession.userId,
+        email: newSession.email,
+        roles: newSession.roles,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + ACCESS_TOKEN_TTL_SECS,
+      };
 
-    const newAccessToken = signAccessToken(newPayload);
+      const newAccessToken = signAccessToken(newPayload);
 
-    setRefreshCookie(reply, newSession.token);
+      setRefreshCookie(reply, newSession.token);
 
-    return reply.code(200).send({ accessToken: newAccessToken });
-  });
+      return reply.code(200).send({ accessToken: newAccessToken });
+    },
+  );
 
   // -------------------------------------------------------------------------
   // POST /logout

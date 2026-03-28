@@ -379,3 +379,122 @@ describe('POST /auth/login', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rate limiting (ADR-006)
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper: send the same request N times and collect all status codes.
+ * Uses inject() so the in-memory rate-limit store counts each request.
+ */
+async function postN(
+  server: FastifyInstance,
+  url: string,
+  body: unknown,
+  n: number,
+): Promise<number[]> {
+  const results: number[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const res = await post(server, url, body);
+    results.push(res.statusCode);
+  }
+
+  return results;
+}
+
+describe('Rate limiting — POST /auth/register (ADR-006)', () => {
+  let server: FastifyInstance;
+
+  beforeEach(async () => {
+    server = await freshServer();
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('allows up to 5 requests within the window before returning 429', async () => {
+    const body = { email: 'ratelimit@example.com', password: 'securePass1' };
+    const codes = await postN(server, '/auth/register', body, 6);
+
+    // The first 5 requests must all succeed (201 on first, 409 on 2–5 for
+    // duplicate, but NOT 429).  The 6th must be rate-limited.
+    const firstFive = codes.slice(0, 5);
+    const sixth = codes[5];
+
+    expect(firstFive.every((c) => c !== 429)).toBe(true);
+    expect(sixth).toBe(429);
+  });
+
+  it('includes X-RateLimit-Limit header on rate-limited responses', async () => {
+    const body = { email: 'rl-header@example.com', password: 'securePass1' };
+
+    // Exhaust the limit
+    await postN(server, '/auth/register', body, 5);
+
+    const res = await server.inject({
+      method: 'POST',
+      url: '/auth/register',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers['x-ratelimit-limit']).toBeDefined();
+  });
+});
+
+describe('Rate limiting — POST /auth/login (ADR-006)', () => {
+  let server: FastifyInstance;
+
+  beforeEach(async () => {
+    server = await freshServer();
+    // Seed a user; this registration counts as 1 against the /register limit
+    // but the login limit is tracked separately.
+    await post(server, '/auth/register', {
+      email: 'loginrl@example.com',
+      password: 'securePass1',
+    });
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('allows up to 10 requests within the window before returning 429', async () => {
+    const body = { email: 'loginrl@example.com', password: 'wrongPassword99' };
+    const codes = await postN(server, '/auth/login', body, 11);
+
+    const firstTen = codes.slice(0, 10);
+    const eleventh = codes[10];
+
+    expect(firstTen.every((c) => c !== 429)).toBe(true);
+    expect(eleventh).toBe(429);
+  });
+});
+
+describe('Rate limiting — POST /auth/refresh (ADR-006)', () => {
+  let server: FastifyInstance;
+
+  beforeEach(async () => {
+    server = await freshServer();
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  it('allows up to 20 requests within the window before returning 429', async () => {
+    // No valid refresh token needed — we are testing that the 401 (missing
+    // token) response is returned for requests 1–20 and a 429 for request 21.
+    const codes = await postN(server, '/auth/refresh', {}, 21);
+
+    const firstTwenty = codes.slice(0, 20);
+    const twentyFirst = codes[20];
+
+    expect(firstTwenty.every((c) => c !== 429)).toBe(true);
+    expect(twentyFirst).toBe(429);
+  });
+});
